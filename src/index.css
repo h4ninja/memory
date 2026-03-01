@@ -1,0 +1,97 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: "Inter", sans-serif;
+}
+
+.editor-content.ProseMirror p {
+  margin: 0;
+}
+
+.editor-content.ProseMirror p + p {
+  margin-top: 0;
+}
+
+.editor-content ul {
+  margin: 0;
+  padding-left: 1.5rem;
+  list-style-type: disc;
+}
+
+.editor-content li {
+  margin: 0.125rem 0;
+}
+
+.editor-content ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0;
+  margin: 0;
+}
+
+.editor-content ul[data-type="taskList"] li {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin: 0.2rem 0;
+}
+
+.editor-content ul[data-type="taskList"] li > label {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.editor-content ul[data-type="taskList"] li > div {
+  display: inline-flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.editor-content ul[data-type="taskList"] li > div > p {
+  display: inline;
+  margin: 0;
+}
+
+.editor-content ul[data-type="taskList"] li input[type="checkbox"] {
+  appearance: none;
+  width: 0.95rem;
+  height: 0.95rem;
+  margin: 0;
+  border: 1px solid #9ca3af;
+  border-radius: 0.25rem;
+  background: #fff;
+  display: grid;
+  place-content: center;
+  cursor: pointer;
+}
+
+.editor-content ul[data-type="taskList"] li input[type="checkbox"]::before {
+  content: "";
+  width: 0.5rem;
+  height: 0.3rem;
+  border-left: 2px solid #fff;
+  border-bottom: 2px solid #fff;
+  transform: rotate(-45deg) scale(0);
+  transform-origin: center;
+  transition: transform 120ms ease;
+}
+
+.editor-content ul[data-type="taskList"] li input[type="checkbox"]:checked {
+  background: #374151;
+  border-color: #374151;
+}
+
+.editor-content ul[data-type="taskList"] li input[type="checkbox"]:checked::before {
+  transform: rotate(-45deg) scale(1);
+}

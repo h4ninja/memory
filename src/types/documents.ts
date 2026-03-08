@@ -4,10 +4,16 @@ export type DocSummary = {
   pinned: boolean;
 };
 
+export type DocContent = {
+  type: string;
+  content?: unknown[];
+  [key: string]: unknown;
+};
+
 export type Doc = {
   id: string;
   title: string;
-  body: string;
+  content: DocContent;
   pinned: boolean;
 };
 

@@ -1,16 +1,18 @@
 import { useEffect, useRef } from "react";
 import { BodyEditor } from "./BodyEditor";
-import type { Doc } from "../types/documents";
+import type { Doc, DocContent, DocSummary } from "../types/documents";
 
 type EditorPanelProps = {
   doc: Doc | null;
   loading: boolean;
+  docs: DocSummary[];
   onChangeTitle: (title: string) => void;
-  onChangeBody: (body: string) => void;
+  onChangeBody: (content: DocContent) => void;
+  onOpenDocument: (docId: string) => void;
   focusTitleToken?: number;
 };
 
-export function EditorPanel({ doc, loading, onChangeTitle, onChangeBody, focusTitleToken }: EditorPanelProps) {
+export function EditorPanel({ doc, loading, docs, onChangeTitle, onChangeBody, onOpenDocument, focusTitleToken }: EditorPanelProps) {
   const bodyFocusRef = useRef<(() => void) | null>(null);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -35,9 +37,9 @@ export function EditorPanel({ doc, loading, onChangeTitle, onChangeBody, focusTi
   }
 
   return (
-    <div className="flex h-full w-full max-w-[700px] flex-col pt-10">
+    <div className="w-full max-w-[700px] pt-10">
       <input
-        className="mb-6 rounded px-3 py-2 text-4xl font-bold outline-none"
+        className="mb-6 w-full rounded px-3 py-2 text-4xl font-bold outline-none"
         ref={titleInputRef}
         value={doc.title}
         onChange={(event) => onChangeTitle(event.target.value)}
@@ -52,7 +54,9 @@ export function EditorPanel({ doc, loading, onChangeTitle, onChangeBody, focusTi
 
       <BodyEditor
         docId={doc.id}
-        markdown={doc.body}
+        content={doc.content}
+        docs={docs}
+        onOpenDocument={onOpenDocument}
         onRegisterFocus={(focusEditor) => {
           bodyFocusRef.current = focusEditor;
         }}

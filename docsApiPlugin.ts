@@ -1,17 +1,33 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import type { PluginOption } from "vite";
+
+type DocContent = {
+  type: string;
+  content?: unknown[];
+  [key: string]: unknown;
+};
 
 type Doc = {
   id: string;
   title: string;
-  body: string;
+  content: DocContent;
   pinned: boolean;
 };
 
+type DocRow = {
+  id: string;
+  title: string;
+  content_json: string;
+  pinned: number;
+};
+
 const docsDir = path.resolve(process.cwd(), "documents");
+const dataDir = path.resolve(process.cwd(), "data");
+const dbPath = path.resolve(dataDir, "memory.sqlite");
 
 const sendJson = (res: ServerResponse, status: number, data: unknown) => {
   res.statusCode = status;
@@ -37,7 +53,7 @@ const readRequestBody = async (req: IncomingMessage): Promise<unknown> => {
   }
 };
 
-const parseMarkdown = (id: string, markdown: string): Doc => {
+const parseMarkdown = (id: string, markdown: string): { id: string; title: string; body: string; pinned: boolean } => {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const pinnedLine = lines[0]?.trim();
   const hasPinnedLine = pinnedLine === "<!-- pinned: true -->" || pinnedLine === "<!-- pinned: false -->";
@@ -65,36 +81,112 @@ const parseMarkdown = (id: string, markdown: string): Doc => {
   };
 };
 
-const toMarkdown = (title: string, body: string, pinned: boolean): string => {
-  const safeTitle = title.replace(/\r?\n/g, " ").trim();
-  return `<!-- pinned: ${pinned ? "true" : "false"} -->\n# ${safeTitle}\n\n${body}`;
+const markdownBodyToContent = (body: string): DocContent => {
+  const lines = body.replace(/\r\n/g, "\n").split("\n");
+  const content = lines.map((line) => {
+    if (line.trim() === "") {
+      return { type: "paragraph" };
+    }
+
+    return {
+      type: "paragraph",
+      content: [{ type: "text", text: line }]
+    };
+  });
+
+  return {
+    type: "doc",
+    content: content.length > 0 ? content : [{ type: "paragraph" }]
+  };
+};
+
+const normalizeDocContent = (value: unknown): DocContent => {
+  if (value && typeof value === "object" && (value as { type?: unknown }).type === "doc") {
+    return value as DocContent;
+  }
+
+  return {
+    type: "doc",
+    content: [{ type: "paragraph" }]
+  };
+};
+
+const rowToDoc = (row: DocRow): Doc => {
+  let parsed: unknown = null;
+
+  try {
+    parsed = JSON.parse(row.content_json);
+  } catch {
+    parsed = null;
+  }
+
+  return {
+    id: row.id,
+    title: row.title,
+    content: normalizeDocContent(parsed),
+    pinned: row.pinned === 1
+  };
 };
 
 const isSafeId = (id: string): boolean => /^[a-z0-9-]+$/i.test(id);
-const isUuidV4 = (id: string): boolean =>
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id);
 
-const createDocumentId = (): string => randomUUID();
+let db: DatabaseSync | null = null;
 
-const migrateDocumentIdsToUuidV4 = async () => {
-  const entries = await readdir(docsDir, { withFileTypes: true });
+const setupDb = async (): Promise<DatabaseSync> => {
+  if (db) {
+    return db;
+  }
 
-  await Promise.all(
-    entries
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
-      .map(async (entry) => {
-        const currentId = entry.name.slice(0, -3);
+  await mkdir(dataDir, { recursive: true });
+  const nextDb = new DatabaseSync(dbPath);
 
-        if (isUuidV4(currentId)) {
-          return;
-        }
+  nextDb.exec(`
+    CREATE TABLE IF NOT EXISTS documents (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      content_json TEXT NOT NULL,
+      pinned INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
 
-        const nextId = createDocumentId();
-        const currentPath = path.join(docsDir, entry.name);
-        const nextPath = path.join(docsDir, `${nextId}.md`);
-        await rename(currentPath, nextPath);
-      })
-  );
+  const countRow = nextDb.prepare("SELECT COUNT(*) as count FROM documents").get() as { count: number };
+
+  if (countRow.count === 0) {
+    let files: Array<{ isFile: () => boolean; name: string }> = [];
+
+    try {
+      files = await readdir(docsDir, { withFileTypes: true });
+    } catch {
+      files = [];
+    }
+
+    const insertStatement = nextDb.prepare(
+      "INSERT OR IGNORE INTO documents (id, title, content_json, pinned) VALUES (?, ?, ?, ?)"
+    );
+
+    for (const entry of files) {
+      if (!entry.isFile() || !entry.name.endsWith(".md")) {
+        continue;
+      }
+
+      const id = entry.name.slice(0, -3);
+
+      if (!isSafeId(id)) {
+        continue;
+      }
+
+      const markdown = await readFile(path.join(docsDir, entry.name), "utf8");
+      const parsed = parseMarkdown(id, markdown);
+      const content = markdownBodyToContent(parsed.body);
+
+      insertStatement.run(parsed.id, parsed.title, JSON.stringify(content), parsed.pinned ? 1 : 0);
+    }
+  }
+
+  db = nextDb;
+  return nextDb;
 };
 
 export const docsApiPlugin = (): PluginOption => ({
@@ -102,52 +194,44 @@ export const docsApiPlugin = (): PluginOption => ({
   configureServer(server) {
     server.middlewares.use(async (req, res, next) => {
       const method = req.method || "GET";
-      const url = req.url || "";
+      const rawUrl = req.url || "";
+      const pathname = rawUrl.split("?")[0] || "";
 
-      if (!url.startsWith("/api/documents")) {
+      if (!pathname.startsWith("/api/documents")) {
         return next();
       }
 
-      await mkdir(docsDir, { recursive: true });
-      await migrateDocumentIdsToUuidV4();
-
       try {
-        if (method === "GET" && url === "/api/documents") {
-          const files = await readdir(docsDir, { withFileTypes: true });
+        const database = await setupDb();
 
-          const docs = await Promise.all(
-            files
-              .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
-              .map(async (entry) => {
-                const id = entry.name.slice(0, -3);
-                const content = await readFile(path.join(docsDir, entry.name), "utf8");
-                const parsed = parseMarkdown(id, content);
+        if (method === "GET" && pathname === "/api/documents") {
+          const rows = database
+            .prepare("SELECT id, title, pinned FROM documents ORDER BY pinned DESC, title COLLATE NOCASE ASC")
+            .all() as Array<{ id: string; title: string; pinned: number }>;
 
-                return { id: parsed.id, title: parsed.title, pinned: parsed.pinned };
-              })
-          );
+          const docs = rows.map((row) => ({
+            id: row.id,
+            title: row.title,
+            pinned: row.pinned === 1
+          }));
 
-          docs.sort((a, b) => {
-            if (a.pinned !== b.pinned) {
-              return a.pinned ? -1 : 1;
-            }
-
-            return a.title.localeCompare(b.title);
-          });
           return sendJson(res, 200, docs);
         }
 
-        if (method === "POST" && url === "/api/documents") {
-          const payload = (await readRequestBody(req)) as { title?: string };
+        if (method === "POST" && pathname === "/api/documents") {
+          const payload = (await readRequestBody(req)) as { title?: unknown };
           const title = typeof payload.title === "string" ? payload.title : "";
-          const id = createDocumentId();
-          const filePath = path.join(docsDir, `${id}.md`);
+          const id = randomUUID();
+          const content: DocContent = { type: "doc", content: [{ type: "paragraph" }] };
 
-          await writeFile(filePath, toMarkdown(title, "", false), "utf8");
-          return sendJson(res, 201, { id, title, body: "", pinned: false });
+          database
+            .prepare("INSERT INTO documents (id, title, content_json, pinned) VALUES (?, ?, ?, ?)")
+            .run(id, title, JSON.stringify(content), 0);
+
+          return sendJson(res, 201, { id, title, content, pinned: false });
         }
 
-        const match = url.match(/^\/api\/documents\/([a-z0-9-]+)$/i);
+        const match = pathname.match(/^\/api\/documents\/([a-z0-9-]+)$/i);
 
         if (!match) {
           return sendJson(res, 404, { error: "Not found" });
@@ -159,26 +243,47 @@ export const docsApiPlugin = (): PluginOption => ({
           return sendJson(res, 400, { error: "Invalid id" });
         }
 
-        const filePath = path.join(docsDir, `${id}.md`);
-
         if (method === "GET") {
-          const content = await readFile(filePath, "utf8");
-          const doc = parseMarkdown(id, content);
-          return sendJson(res, 200, doc);
+          const row = database
+            .prepare("SELECT id, title, content_json, pinned FROM documents WHERE id = ?")
+            .get(id) as DocRow | undefined;
+
+          if (!row) {
+            return sendJson(res, 404, { error: "Not found" });
+          }
+
+          return sendJson(res, 200, rowToDoc(row));
         }
 
         if (method === "PUT") {
-          const payload = (await readRequestBody(req)) as { title?: string; body?: string; pinned?: boolean };
-          const title = typeof payload.title === "string" ? payload.title : "";
-          const body = typeof payload.body === "string" ? payload.body : "";
-          const pinned = payload.pinned === true;
+          const row = database
+            .prepare("SELECT id, title, content_json, pinned FROM documents WHERE id = ?")
+            .get(id) as DocRow | undefined;
 
-          await writeFile(filePath, toMarkdown(title, body, pinned), "utf8");
-          return sendJson(res, 200, { id, title, body, pinned });
+          if (!row) {
+            return sendJson(res, 404, { error: "Not found" });
+          }
+
+          const payload = (await readRequestBody(req)) as { title?: unknown; content?: unknown; pinned?: unknown };
+          const existing = rowToDoc(row);
+          const nextTitle = typeof payload.title === "string" ? payload.title : existing.title;
+          const nextContent = payload.content !== undefined ? normalizeDocContent(payload.content) : existing.content;
+          const nextPinned = payload.pinned === true;
+
+          database
+            .prepare("UPDATE documents SET title = ?, content_json = ?, pinned = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+            .run(nextTitle, JSON.stringify(nextContent), nextPinned ? 1 : 0, id);
+
+          return sendJson(res, 200, { id, title: nextTitle, content: nextContent, pinned: nextPinned });
         }
 
         if (method === "DELETE") {
-          await unlink(filePath);
+          const result = database.prepare("DELETE FROM documents WHERE id = ?").run(id) as { changes?: number };
+
+          if (!result.changes) {
+            return sendJson(res, 404, { error: "Not found" });
+          }
+
           return sendJson(res, 200, { id });
         }
 

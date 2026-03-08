@@ -92,7 +92,7 @@ export default function App() {
     const timeout = window.setTimeout(async () => {
       await fetchJson<Doc>(`/api/documents/${doc.id}`, {
         method: "PUT",
-        body: JSON.stringify({ title: doc.title, body: doc.body, pinned: doc.pinned })
+        body: JSON.stringify({ title: doc.title, content: doc.content, pinned: doc.pinned })
       });
 
       setDocs((current) =>
@@ -190,7 +190,7 @@ export default function App() {
 
     await fetchJson<Doc>(`/api/documents/${targetId}`, {
       method: "PUT",
-      body: JSON.stringify({ title: targetDoc.title, body: targetDoc.body, pinned })
+      body: JSON.stringify({ title: targetDoc.title, content: targetDoc.content, pinned })
     });
 
     setDocs((current) => current.map((item) => (item.id === targetId ? { ...item, pinned } : item)));
@@ -255,7 +255,7 @@ export default function App() {
   const contextTarget = contextMenu ? docs.find((item) => item.id === contextMenu.docId) ?? null : null;
 
   return (
-    <div className="relative h-screen">
+    <div className="relative min-h-screen">
       <Sidebar
         docs={docs}
         selectedId={selectedId}
@@ -267,12 +267,16 @@ export default function App() {
         onOpenContextMenu={openContextMenu}
       />
 
-      <main className="relative flex h-full justify-center p-4">
+      <main className="relative flex min-h-screen justify-center p-4">
         <EditorPanel
           doc={doc}
           loading={loading}
+          docs={docs}
           onChangeTitle={(title) => setDoc((current) => (current ? { ...current, title } : current))}
-          onChangeBody={(body) => setDoc((current) => (current ? { ...current, body } : current))}
+          onChangeBody={(content) => setDoc((current) => (current ? { ...current, content } : current))}
+          onOpenDocument={(docId) => {
+            selectDocument(docId);
+          }}
           focusTitleToken={focusTitleToken}
         />
       </main>

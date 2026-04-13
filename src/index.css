@@ -132,11 +132,27 @@ body {
 }
 
 .editor-content .doc-link {
-  color: #1d4ed8;
+  color: #2563eb;
   cursor: pointer;
   font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .editor-content .doc-link:hover {
+  color: #1d4ed8;
+}
+
+.editor-content a {
+  color: #2563eb;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.editor-content a:hover {
+  color: #1d4ed8;
+}
+
+.editor-content a:visited {
   color: #1e40af;
 }

@@ -42,8 +42,8 @@ export function Sidebar({ docs, selectedId, loading, onCreateDocument, onSelectD
   const unpinnedDocs = docs.filter((item) => !item.pinned);
 
   return (
-    <div className="group absolute left-0 top-0 z-20 h-screen w-64">
-      <aside className="pointer-events-none absolute left-0 top-0 h-screen w-64 bg-white p-3 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100">
+    <div className="group fixed left-0 top-0 z-20 h-screen w-64">
+      <aside className="pointer-events-none absolute left-0 top-0 h-screen w-64 overflow-y-auto bg-white p-3 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100">
         <button
           type="button"
           className="mb-8 flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-gray-300 bg-gray-100 text-lg text-gray-700 transition-opacity hover:opacity-70"

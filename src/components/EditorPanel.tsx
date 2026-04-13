@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { BodyEditor } from "./BodyEditor";
 import type { Doc, DocContent, DocSummary } from "../types/documents";
 
@@ -9,18 +9,25 @@ type EditorPanelProps = {
   onChangeTitle: (title: string) => void;
   onChangeBody: (content: DocContent) => void;
   onOpenDocument: (docId: string) => void;
+  onCreateLinkedDocument: (title: string) => Promise<DocSummary>;
   focusTitleToken?: number;
 };
 
-export function EditorPanel({ doc, loading, docs, onChangeTitle, onChangeBody, onOpenDocument, focusTitleToken }: EditorPanelProps) {
+export function EditorPanel({
+  doc,
+  loading,
+  docs,
+  onChangeTitle,
+  onChangeBody,
+  onOpenDocument,
+  onCreateLinkedDocument,
+  focusTitleToken
+}: EditorPanelProps) {
   const bodyFocusRef = useRef<(() => void) | null>(null);
+  const bodyFocusStartRef = useRef<(() => void) | null>(null);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
 
-  useEffect(() => {
-    if (!focusTitleToken) {
-      return;
-    }
-
+  const focusTitleInput = useCallback(() => {
     const input = titleInputRef.current;
 
     if (!input) {
@@ -30,7 +37,15 @@ export function EditorPanel({ doc, loading, docs, onChangeTitle, onChangeBody, o
     input.focus();
     const end = input.value.length;
     input.setSelectionRange(end, end);
-  }, [focusTitleToken]);
+  }, []);
+
+  useEffect(() => {
+    if (!focusTitleToken) {
+      return;
+    }
+
+    focusTitleInput();
+  }, [focusTitleInput, focusTitleToken]);
 
   if (!doc) {
     return <p className="w-full max-w-[700px] text-sm text-gray-500">{loading ? "Loading..." : "Select or create a document."}</p>;
@@ -47,6 +62,12 @@ export function EditorPanel({ doc, loading, docs, onChangeTitle, onChangeBody, o
           if (event.key === "Enter") {
             event.preventDefault();
             bodyFocusRef.current?.();
+            return;
+          }
+
+          if (event.key === "ArrowDown") {
+            event.preventDefault();
+            bodyFocusStartRef.current?.();
           }
         }}
         placeholder="Title"
@@ -57,6 +78,11 @@ export function EditorPanel({ doc, loading, docs, onChangeTitle, onChangeBody, o
         content={doc.content}
         docs={docs}
         onOpenDocument={onOpenDocument}
+        onCreateLinkedDocument={onCreateLinkedDocument}
+        onMoveFocusToTitle={focusTitleInput}
+        onRegisterFocusStart={(focusEditor: () => void) => {
+          bodyFocusStartRef.current = focusEditor;
+        }}
         onRegisterFocus={(focusEditor) => {
           bodyFocusRef.current = focusEditor;
         }}

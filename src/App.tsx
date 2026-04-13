@@ -160,16 +160,14 @@ export default function App() {
     setSelectedId(docId);
   };
 
-  const createDocument = async () => {
+  const createDocument = async (title = "") => {
     const created = await fetchJson<Doc>("/api/documents", {
       method: "POST",
-      body: JSON.stringify({ title: "" })
+      body: JSON.stringify({ title })
     });
 
     setDocs((current) => [...current, { id: created.id, title: created.title, pinned: created.pinned }]);
-    selectDocument(created.id);
-    setDoc(created);
-    setFocusTitleToken((current) => current + 1);
+    return created;
   };
 
   const setPinnedState = async (targetId: string, pinned: boolean) => {
@@ -255,19 +253,23 @@ export default function App() {
   const contextTarget = contextMenu ? docs.find((item) => item.id === contextMenu.docId) ?? null : null;
 
   return (
-    <div className="relative min-h-screen">
+    <div className="relative h-screen overflow-hidden">
       <Sidebar
         docs={docs}
         selectedId={selectedId}
         loading={loading}
         onCreateDocument={() => {
-          void createDocument();
+          void createDocument().then((created) => {
+            selectDocument(created.id);
+            setDoc(created);
+            setFocusTitleToken((current) => current + 1);
+          });
         }}
         onSelectDocument={selectDocument}
         onOpenContextMenu={openContextMenu}
       />
 
-      <main className="relative flex min-h-screen justify-center p-4">
+      <main className="relative flex h-screen justify-center overflow-y-auto p-4">
         <EditorPanel
           doc={doc}
           loading={loading}
@@ -276,6 +278,10 @@ export default function App() {
           onChangeBody={(content) => setDoc((current) => (current ? { ...current, content } : current))}
           onOpenDocument={(docId) => {
             selectDocument(docId);
+          }}
+          onCreateLinkedDocument={async (title) => {
+            const created = await createDocument(title);
+            return { id: created.id, title: created.title, pinned: created.pinned };
           }}
           focusTitleToken={focusTitleToken}
         />

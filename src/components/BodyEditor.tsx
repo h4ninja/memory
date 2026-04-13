@@ -13,6 +13,9 @@ type BodyEditorProps = {
   content: DocContent;
   docs: DocSummary[];
   onOpenDocument: (docId: string) => void;
+  onCreateLinkedDocument: (title: string) => Promise<DocSummary>;
+  onMoveFocusToTitle: () => void;
+  onRegisterFocusStart: (focusEditor: () => void) => void;
   onChange: (nextContent: DocContent) => void;
   onRegisterFocus: (focusEditor: () => void) => void;
 };
@@ -315,6 +318,47 @@ const DocumentLink = Mark.create<{
     return [
       new Plugin({
         props: {
+          handleKeyDown: (view, event) => {
+            if (event.key !== "Backspace") {
+              return false;
+            }
+
+            const { state } = view;
+            const { selection } = state;
+
+            if (!selection.empty) {
+              return false;
+            }
+
+            const markType = state.schema.marks.documentLink;
+
+            if (!markType) {
+              return false;
+            }
+
+            const hasDocLinkMark = (node: { marks?: ReadonlyArray<{ type: { name: string } }> } | null) =>
+              !!node?.marks?.some((mark) => mark.type.name === markType.name);
+
+            const { $from } = selection;
+            const before = $from.nodeBefore;
+            const after = $from.nodeAfter;
+
+            if (before && hasDocLinkMark(before)) {
+              const from = selection.from - before.nodeSize;
+              const to = selection.from;
+              view.dispatch(state.tr.delete(from, to));
+              return true;
+            }
+
+            if (after && hasDocLinkMark(after)) {
+              const from = selection.from;
+              const to = selection.from + after.nodeSize;
+              view.dispatch(state.tr.delete(from, to));
+              return true;
+            }
+
+            return false;
+          },
           handleClick: (view, _pos, event) => {
             if (!(event.target instanceof HTMLElement)) {
               return false;
@@ -367,8 +411,19 @@ const normalizeContent = (value: DocContent): JsonNode => {
 
 const normalizeQuery = (value: string): string => value.trim().toLowerCase();
 
-export function BodyEditor({ docId, content, docs, onOpenDocument, onChange, onRegisterFocus }: BodyEditorProps) {
+export function BodyEditor({
+  docId,
+  content,
+  docs,
+  onOpenDocument,
+  onCreateLinkedDocument,
+  onMoveFocusToTitle,
+  onRegisterFocusStart,
+  onChange,
+  onRegisterFocus
+}: BodyEditorProps) {
   const [suggestion, setSuggestion] = useState<DocSuggestionState | null>(null);
+  const [creatingDoc, setCreatingDoc] = useState(false);
   const initialDoc = useMemo(() => normalizeContent(content), [content]);
 
   const editor = useEditor(
@@ -388,6 +443,21 @@ export function BodyEditor({ docId, content, docs, onOpenDocument, onChange, onR
       editorProps: {
         attributes: {
           class: "editor-content min-h-[50vh] px-3 pt-2 pb-[50vh] font-light outline-none"
+        },
+        handleKeyDown: (view, event) => {
+          if (event.key !== "ArrowUp") {
+            return false;
+          }
+
+          const { selection } = view.state;
+
+          if (!selection.empty || selection.from !== 1) {
+            return false;
+          }
+
+          event.preventDefault();
+          onMoveFocusToTitle();
+          return true;
         }
       },
       onUpdate: ({ editor: currentEditor }) => {
@@ -445,10 +515,14 @@ export function BodyEditor({ docId, content, docs, onOpenDocument, onChange, onR
       return;
     }
 
+    onRegisterFocusStart(() => {
+      editor.commands.focus("start");
+    });
+
     onRegisterFocus(() => {
       editor.commands.focus("end");
     });
-  }, [editor, onRegisterFocus]);
+  }, [editor, onRegisterFocus, onRegisterFocusStart]);
 
   useEffect(() => {
     if (!editor) {
@@ -506,6 +580,24 @@ export function BodyEditor({ docId, content, docs, onOpenDocument, onChange, onR
       .slice(0, 8);
   }, [docs, docId, suggestion]);
 
+  const createTitle = useMemo(() => {
+    if (!suggestion) {
+      return "";
+    }
+
+    return suggestion.query.trim();
+  }, [suggestion]);
+
+  const canCreateFromSuggestion = useMemo(() => {
+    if (!suggestion || createTitle === "") {
+      return false;
+    }
+
+    const normalizedTitle = createTitle.toLowerCase();
+    const hasMatch = docs.some((item) => item.title.trim().toLowerCase() === normalizedTitle);
+    return !hasMatch;
+  }, [docs, createTitle, suggestion]);
+
   const insertDocumentLink = useCallback(
     (target: DocSummary) => {
       if (!editor || !suggestion) {
@@ -536,10 +628,25 @@ export function BodyEditor({ docId, content, docs, onOpenDocument, onChange, onR
     [editor, suggestion]
   );
 
+  const createAndInsertDocumentLink = useCallback(async () => {
+    if (!suggestion || !canCreateFromSuggestion || creatingDoc) {
+      return;
+    }
+
+    setCreatingDoc(true);
+
+    try {
+      const created = await onCreateLinkedDocument(createTitle);
+      insertDocumentLink(created);
+    } finally {
+      setCreatingDoc(false);
+    }
+  }, [canCreateFromSuggestion, createTitle, creatingDoc, insertDocumentLink, onCreateLinkedDocument, suggestion]);
+
   return (
     <div className="relative">
       <EditorContent editor={editor} />
-      {suggestion && suggestedDocs.length > 0 ? (
+      {suggestion && (suggestedDocs.length > 0 || canCreateFromSuggestion) ? (
         <div
           className="doc-link-suggestions fixed z-40 min-w-[220px] rounded-md border border-gray-200 bg-white p-1 shadow-lg"
           style={{ left: suggestion.left, top: suggestion.top }}
@@ -557,6 +664,19 @@ export function BodyEditor({ docId, content, docs, onOpenDocument, onChange, onR
               +{item.title || "Untitled"}
             </button>
           ))}
+          {canCreateFromSuggestion ? (
+            <button
+              type="button"
+              className="block w-full cursor-pointer rounded px-2 py-1.5 text-left text-sm text-blue-700 hover:bg-blue-50 disabled:cursor-default disabled:opacity-60"
+              disabled={creatingDoc}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                void createAndInsertDocumentLink();
+              }}
+            >
+              {creatingDoc ? `Creating +${createTitle}...` : `Create +${createTitle}`}
+            </button>
+          ) : null}
         </div>
       ) : null}
     </div>

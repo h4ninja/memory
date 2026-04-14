@@ -2,8 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Extension, Mark } from "@tiptap/core";
 import TaskItem from "@tiptap/extension-task-item";
 import TaskList from "@tiptap/extension-task-list";
+import { Fragment, Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { Plugin } from "@tiptap/pm/state";
-import { Decoration, DecorationSet } from "@tiptap/pm/view";
+import { Decoration, DecorationSet, EditorView } from "@tiptap/pm/view";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import type { DocContent, DocSummary } from "../types/documents";
@@ -144,9 +145,102 @@ const BlockIndent = Extension.create({
   }
 });
 
+type DragItemInfo = {
+  itemPos: number;
+  index: number;
+  itemType: string;
+  parentPos: number;
+  parentType: string;
+  parentNode: ProseMirrorNode;
+};
+
+const getDragItemInfoAtPos = (doc: ProseMirrorNode, pos: number): DragItemInfo | null => {
+  const clampedPos = Math.max(0, Math.min(pos, doc.content.size));
+  const $pos = doc.resolve(clampedPos);
+
+  for (let depth = $pos.depth; depth > 0; depth -= 1) {
+    const itemNode = $pos.node(depth);
+    const itemType = itemNode.type.name;
+
+    if (itemType !== "listItem" && itemType !== "taskItem") {
+      continue;
+    }
+
+    const parentNode = $pos.node(depth - 1);
+    const parentType = parentNode.type.name;
+
+    if (parentType !== "bulletList" && parentType !== "taskList") {
+      continue;
+    }
+
+    return {
+      itemPos: $pos.before(depth),
+      index: $pos.index(depth - 1),
+      itemType,
+      parentPos: $pos.before(depth - 1),
+      parentType,
+      parentNode
+    };
+  }
+
+  return null;
+};
+
+const moveListItem = (view: EditorView, source: DragItemInfo, target: DragItemInfo, dropAfter: boolean): boolean => {
+  if (source.parentPos !== target.parentPos || source.parentType !== target.parentType || source.itemType !== target.itemType) {
+    return false;
+  }
+
+  const children: ProseMirrorNode[] = [];
+  source.parentNode.forEach((child) => {
+    children.push(child);
+  });
+
+  if (source.index < 0 || source.index >= children.length || target.index < 0 || target.index >= children.length) {
+    return false;
+  }
+
+  let insertionIndex = target.index + (dropAfter ? 1 : 0);
+
+  if (source.index < insertionIndex) {
+    insertionIndex -= 1;
+  }
+
+  if (insertionIndex === source.index) {
+    return false;
+  }
+
+  const moved = children[source.index];
+
+  if (!moved) {
+    return false;
+  }
+
+  children.splice(source.index, 1);
+  children.splice(insertionIndex, 0, moved);
+
+  const nextParentNode = source.parentNode.copy(Fragment.fromArray(children));
+  const tr = view.state.tr.replaceWith(source.parentPos, source.parentPos + source.parentNode.nodeSize, nextParentNode);
+  view.dispatch(tr);
+  return true;
+};
+
 const CollapsibleIndentedItems = Extension.create({
   name: "collapsibleIndentedItems",
   addProseMirrorPlugins() {
+    let sourceItemPos: number | null = null;
+    let handleMouseUp: ((event: MouseEvent) => void) | null = null;
+
+    const stopDrag = () => {
+      if (handleMouseUp) {
+        window.removeEventListener("mouseup", handleMouseUp);
+      }
+
+      sourceItemPos = null;
+      handleMouseUp = null;
+      document.body.classList.remove("dragging-list-item");
+    };
+
     return [
       new Plugin({
         props: {
@@ -180,6 +274,22 @@ const CollapsibleIndentedItems = Extension.create({
                 const current = items[index];
                 const next = items[index + 1];
                 const hasChildren = !!next && next.indent > current.indent;
+
+                decorations.push(
+                  Decoration.widget(
+                    current.pos + 2,
+                    () => {
+                      const button = document.createElement("button");
+                      button.type = "button";
+                      button.className = "drag-handle";
+                      button.setAttribute("data-drag-item-pos", String(current.pos));
+                      button.setAttribute("contenteditable", "false");
+                      button.textContent = "⋮⋮";
+                      return button;
+                    },
+                    { side: -1 }
+                  )
+                );
 
                 if (!hasChildren) {
                   continue;
@@ -246,12 +356,40 @@ const CollapsibleIndentedItems = Extension.create({
 
               const toggle = event.target.closest("button[data-collapse-pos]");
 
-              if (!toggle) {
+              if (toggle) {
+                event.preventDefault();
+                const rawPos = toggle.getAttribute("data-collapse-pos");
+
+                if (!rawPos) {
+                  return false;
+                }
+
+                const pos = Number.parseInt(rawPos, 10);
+
+                if (Number.isNaN(pos)) {
+                  return false;
+                }
+
+                const node = view.state.doc.nodeAt(pos);
+
+                if (!node || (node.type.name !== "listItem" && node.type.name !== "taskItem")) {
+                  return false;
+                }
+
+                const collapsed = node.attrs.collapsed === true;
+                view.dispatch(view.state.tr.setNodeMarkup(pos, undefined, { ...node.attrs, collapsed: !collapsed }));
+                return true;
+              }
+
+              const dragHandle = event.target.closest("button[data-drag-item-pos]");
+
+              if (!dragHandle) {
                 return false;
               }
 
               event.preventDefault();
-              const rawPos = toggle.getAttribute("data-collapse-pos");
+
+              const rawPos = dragHandle.getAttribute("data-drag-item-pos");
 
               if (!rawPos) {
                 return false;
@@ -263,14 +401,44 @@ const CollapsibleIndentedItems = Extension.create({
                 return false;
               }
 
-              const node = view.state.doc.nodeAt(pos);
+              sourceItemPos = pos;
+              document.body.classList.add("dragging-list-item");
 
-              if (!node || (node.type.name !== "listItem" && node.type.name !== "taskItem")) {
-                return false;
-              }
+              handleMouseUp = (mouseUpEvent: MouseEvent) => {
+                const activeSourcePos = sourceItemPos;
+                stopDrag();
 
-              const collapsed = node.attrs.collapsed === true;
-              view.dispatch(view.state.tr.setNodeMarkup(pos, undefined, { ...node.attrs, collapsed: !collapsed }));
+                if (activeSourcePos === null) {
+                  return;
+                }
+
+                const sourceInfo = getDragItemInfoAtPos(view.state.doc, activeSourcePos + 1);
+
+                if (!sourceInfo) {
+                  return;
+                }
+
+                const coords = view.posAtCoords({ left: mouseUpEvent.clientX, top: mouseUpEvent.clientY });
+
+                if (!coords) {
+                  return;
+                }
+
+                const targetInfo = getDragItemInfoAtPos(view.state.doc, coords.pos);
+
+                if (!targetInfo) {
+                  return;
+                }
+
+                const targetDom = view.nodeDOM(targetInfo.itemPos);
+                const targetElement = targetDom instanceof HTMLElement ? targetDom : null;
+                const targetRect = targetElement?.getBoundingClientRect();
+                const dropAfter = !!targetRect && mouseUpEvent.clientY > targetRect.top + targetRect.height / 2;
+
+                moveListItem(view, sourceInfo, targetInfo, dropAfter);
+              };
+
+              window.addEventListener("mouseup", handleMouseUp, { once: true });
               return true;
             }
           }

@@ -5,9 +5,12 @@ type SidebarProps = {
   docs: DocSummary[];
   selectedId: string | null;
   loading: boolean;
+  currentPage: "editor" | "next-task" | "routines";
   onCreateDocument: () => void;
   onSelectDocument: (docId: string) => void;
   onOpenContextMenu: (event: ReactMouseEvent<HTMLButtonElement>, docId: string) => void;
+  onOpenNextTask: () => void;
+  onOpenRoutines: () => void;
 };
 
 const DocumentButton = ({
@@ -37,7 +40,17 @@ const DocumentButton = ({
   );
 };
 
-export function Sidebar({ docs, selectedId, loading, onCreateDocument, onSelectDocument, onOpenContextMenu }: SidebarProps) {
+export function Sidebar({
+  docs,
+  selectedId,
+  loading,
+  currentPage,
+  onCreateDocument,
+  onSelectDocument,
+  onOpenContextMenu,
+  onOpenNextTask,
+  onOpenRoutines
+}: SidebarProps) {
   const pinnedDocs = docs.filter((item) => item.pinned);
   const unpinnedDocs = docs.filter((item) => !item.pinned);
 
@@ -48,10 +61,33 @@ export function Sidebar({ docs, selectedId, loading, onCreateDocument, onSelectD
           type="button"
           className="mb-8 flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-gray-300 bg-gray-100 text-lg text-gray-700 transition-opacity hover:opacity-70"
           onClick={onCreateDocument}
-          aria-label="New document"
+          aria-label="new document"
         >
           +
         </button>
+
+        <div className="mb-4 space-y-1">
+          <button
+            type="button"
+            className={`block w-full cursor-pointer rounded px-2 py-1.5 text-left text-sm ${
+              currentPage === "next-task" ? "bg-gray-100 text-gray-900" : "text-gray-700 hover:bg-gray-50"
+            }`}
+            onClick={onOpenNextTask}
+          >
+            next task
+          </button>
+          <button
+            type="button"
+            className={`block w-full cursor-pointer rounded px-2 py-1.5 text-left text-sm ${
+              currentPage === "routines" ? "bg-gray-100 text-gray-900" : "text-gray-700 hover:bg-gray-50"
+            }`}
+            onClick={onOpenRoutines}
+          >
+            routines
+          </button>
+        </div>
+
+        <hr className="my-3 border-gray-200" />
 
         <div>
           {pinnedDocs.map((item) => (
@@ -76,7 +112,7 @@ export function Sidebar({ docs, selectedId, loading, onCreateDocument, onSelectD
             />
           ))}
 
-          {!loading && docs.length === 0 ? <p className="text-sm text-gray-500">No documents yet.</p> : null}
+          {!loading && docs.length === 0 ? <p className="text-sm text-gray-500">no documents yet.</p> : null}
         </div>
       </aside>
     </div>

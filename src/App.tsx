@@ -1,28 +1,48 @@
 import { useEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { DocumentContextMenu } from "./components/DocumentContextMenu";
 import { EditorPanel } from "./components/EditorPanel";
+import { NextTaskPage } from "./components/NextTaskPage";
+import { RoutinesPage } from "./components/RoutinesPage";
 import { Sidebar } from "./components/Sidebar";
 import type { ContextMenuState, Doc, DocSummary } from "./types/documents";
 
-const getDocumentIdFromPath = (): string | null => {
+type AppPage = "editor" | "next-task" | "routines";
+
+const getRouteFromPath = (): { page: AppPage; docId: string | null } => {
   if (typeof window === "undefined") {
-    return null;
+    return { page: "editor", docId: null };
+  }
+
+  if (window.location.pathname === "/next-task") {
+    return { page: "next-task", docId: null };
+  }
+
+  if (window.location.pathname === "/routines") {
+    return { page: "routines", docId: null };
   }
 
   const match = window.location.pathname.match(/^\/documents\/([^/]+)$/);
 
   if (!match) {
-    return null;
+    return { page: "editor", docId: null };
   }
 
   try {
-    return decodeURIComponent(match[1]);
+    return { page: "editor", docId: decodeURIComponent(match[1]) };
   } catch {
-    return null;
+    return { page: "editor", docId: null };
   }
 };
 
-const getDocumentPath = (docId: string | null): string => {
+const getPathForPage = (page: AppPage, docId: string | null): string => {
+  if (page === "next-task") {
+    return "/next-task";
+  }
+
+  if (page === "routines") {
+    return "/routines";
+  }
+
   if (!docId) {
     return "/";
   }
@@ -46,8 +66,10 @@ const fetchJson = async <T,>(input: RequestInfo, init?: RequestInit): Promise<T>
 };
 
 export default function App() {
+  const initialRoute = getRouteFromPath();
   const [docs, setDocs] = useState<DocSummary[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(getDocumentIdFromPath);
+  const [currentPage, setCurrentPage] = useState<AppPage>(initialRoute.page);
+  const [selectedId, setSelectedId] = useState<string | null>(initialRoute.docId);
   const [doc, setDoc] = useState<Doc | null>(null);
   const [loading, setLoading] = useState(true);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -128,7 +150,9 @@ export default function App() {
 
   useEffect(() => {
     const handlePopState = () => {
-      setSelectedId(getDocumentIdFromPath());
+      const route = getRouteFromPath();
+      setCurrentPage(route.page);
+      setSelectedId(route.docId);
     };
 
     window.addEventListener("popstate", handlePopState);
@@ -139,15 +163,15 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const nextPath = getDocumentPath(selectedId);
+    const nextPath = getPathForPage(currentPage, selectedId);
 
     if (window.location.pathname !== nextPath) {
       window.history.replaceState(null, "", nextPath);
     }
-  }, [selectedId]);
+  }, [currentPage, selectedId]);
 
   const selectDocument = (docId: string, historyMode: "push" | "replace" = "push") => {
-    const nextPath = getDocumentPath(docId);
+    const nextPath = getPathForPage("editor", docId);
 
     if (window.location.pathname !== nextPath) {
       if (historyMode === "push") {
@@ -157,7 +181,18 @@ export default function App() {
       }
     }
 
+    setCurrentPage("editor");
     setSelectedId(docId);
+  };
+
+  const navigateToPage = (page: AppPage) => {
+    const nextPath = getPathForPage(page, selectedId);
+
+    if (window.location.pathname !== nextPath) {
+      window.history.pushState(null, "", nextPath);
+    }
+
+    setCurrentPage(page);
   };
 
   const createDocument = async (title = "") => {
@@ -258,6 +293,7 @@ export default function App() {
         docs={docs}
         selectedId={selectedId}
         loading={loading}
+        currentPage={currentPage}
         onCreateDocument={() => {
           void createDocument().then((created) => {
             selectDocument(created.id);
@@ -265,26 +301,40 @@ export default function App() {
             setFocusTitleToken((current) => current + 1);
           });
         }}
+        onOpenNextTask={() => navigateToPage("next-task")}
+        onOpenRoutines={() => navigateToPage("routines")}
         onSelectDocument={selectDocument}
         onOpenContextMenu={openContextMenu}
       />
 
       <main className="relative flex h-screen justify-center overflow-y-auto p-4">
-        <EditorPanel
-          doc={doc}
-          loading={loading}
-          docs={docs}
-          onChangeTitle={(title) => setDoc((current) => (current ? { ...current, title } : current))}
-          onChangeBody={(content) => setDoc((current) => (current ? { ...current, content } : current))}
-          onOpenDocument={(docId) => {
-            selectDocument(docId);
-          }}
-          onCreateLinkedDocument={async (title) => {
-            const created = await createDocument(title);
-            return { id: created.id, title: created.title, pinned: created.pinned };
-          }}
-          focusTitleToken={focusTitleToken}
-        />
+        {currentPage === "next-task" ? (
+          <NextTaskPage
+            onOpenDocument={(docId) => {
+              selectDocument(docId);
+            }}
+          />
+        ) : null}
+
+        {currentPage === "routines" ? <RoutinesPage /> : null}
+
+        {currentPage === "editor" ? (
+          <EditorPanel
+            doc={doc}
+            loading={loading}
+            docs={docs}
+            onChangeTitle={(title) => setDoc((current) => (current ? { ...current, title } : current))}
+            onChangeBody={(content) => setDoc((current) => (current ? { ...current, content } : current))}
+            onOpenDocument={(docId) => {
+              selectDocument(docId);
+            }}
+            onCreateLinkedDocument={async (title) => {
+              const created = await createDocument(title);
+              return { id: created.id, title: created.title, pinned: created.pinned };
+            }}
+            focusTitleToken={focusTitleToken}
+          />
+        ) : null}
       </main>
 
       {contextMenu ? (

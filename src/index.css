@@ -30,6 +30,32 @@ body {
 
 .editor-content li {
   margin: 0.125rem 0;
+  position: relative;
+}
+
+.editor-content .drag-handle {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: #9ca3af;
+  cursor: grab;
+  font-size: 0.9rem;
+  letter-spacing: -0.08rem;
+  line-height: 1;
+  left: -1.35rem;
+  opacity: 0;
+  padding: 0;
+  position: absolute;
+  top: 0.15rem;
+}
+
+.editor-content li:hover > .drag-handle,
+.dragging-list-item .editor-content .drag-handle {
+  opacity: 1;
+}
+
+.editor-content .drag-handle:hover {
+  color: #4b5563;
 }
 
 .editor-content .collapse-toggle {

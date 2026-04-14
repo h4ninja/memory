@@ -6,11 +6,15 @@ import { RoutinesPage } from "./components/RoutinesPage";
 import { Sidebar } from "./components/Sidebar";
 import type { ContextMenuState, Doc, DocSummary } from "./types/documents";
 
-type AppPage = "editor" | "next-task" | "routines";
+type AppPage = "home" | "editor" | "next-task" | "routines";
 
 const getRouteFromPath = (): { page: AppPage; docId: string | null } => {
   if (typeof window === "undefined") {
-    return { page: "editor", docId: null };
+    return { page: "home", docId: null };
+  }
+
+  if (window.location.pathname === "/") {
+    return { page: "home", docId: null };
   }
 
   if (window.location.pathname === "/next-task") {
@@ -24,17 +28,21 @@ const getRouteFromPath = (): { page: AppPage; docId: string | null } => {
   const match = window.location.pathname.match(/^\/documents\/([^/]+)$/);
 
   if (!match) {
-    return { page: "editor", docId: null };
+    return { page: "home", docId: null };
   }
 
   try {
     return { page: "editor", docId: decodeURIComponent(match[1]) };
   } catch {
-    return { page: "editor", docId: null };
+    return { page: "home", docId: null };
   }
 };
 
 const getPathForPage = (page: AppPage, docId: string | null): string => {
+  if (page === "home") {
+    return "/";
+  }
+
   if (page === "next-task") {
     return "/next-task";
   }
@@ -82,6 +90,10 @@ export default function App() {
       setDocs(list);
 
       setSelectedId((current) => {
+        if (currentPage !== "editor") {
+          return current;
+        }
+
         if (current && list.some((item) => item.id === current)) {
           return current;
         }
@@ -93,7 +105,7 @@ export default function App() {
     };
 
     loadDocs().catch(() => setLoading(false));
-  }, []);
+  }, [currentPage]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -334,6 +346,12 @@ export default function App() {
             }}
             focusTitleToken={focusTitleToken}
           />
+        ) : null}
+
+        {currentPage === "home" ? (
+          <section className="flex h-full w-full items-center justify-center">
+            <h1 className="text-3xl font-semibold text-gray-900">memory</h1>
+          </section>
         ) : null}
       </main>
 

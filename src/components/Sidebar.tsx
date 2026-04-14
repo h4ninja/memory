@@ -5,7 +5,7 @@ type SidebarProps = {
   docs: DocSummary[];
   selectedId: string | null;
   loading: boolean;
-  currentPage: "editor" | "next-task" | "routines";
+  currentPage: "home" | "editor" | "next-task" | "routines";
   onCreateDocument: () => void;
   onSelectDocument: (docId: string) => void;
   onOpenContextMenu: (event: ReactMouseEvent<HTMLButtonElement>, docId: string) => void;

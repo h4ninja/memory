@@ -60,6 +60,25 @@ export function NextTaskPage({ onOpenDocument }: NextTaskPageProps) {
     }
   };
 
+  const completeTodo = async (docId: string, nodePath: number[]) => {
+    if (completing) {
+      return;
+    }
+
+    setCompleting(true);
+
+    try {
+      await fetchJson<{ ok: true }>("/api/next-task/complete", {
+        method: "POST",
+        body: JSON.stringify({ source: "todo", docId, nodePath })
+      });
+
+      await load();
+    } finally {
+      setCompleting(false);
+    }
+  };
+
   if (loading) {
     return <p className="w-full max-w-[700px] text-sm text-gray-500">Loading next task...</p>;
   }
@@ -125,6 +144,16 @@ export function NextTaskPage({ onOpenDocument }: NextTaskPageProps) {
               onClick={() => onOpenDocument(nextTask.docId)}
             >
               Open document
+            </button>
+            <button
+              type="button"
+              className="mt-2 ml-2 cursor-pointer rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-default disabled:opacity-60"
+              onClick={() => {
+                void completeTodo(nextTask.docId, nextTask.nodePath);
+              }}
+              disabled={completing}
+            >
+              {completing ? "Completing..." : "task completed"}
             </button>
           </>
         )}

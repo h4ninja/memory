@@ -16,6 +16,7 @@ type Doc = {
   title: string;
   content: DocContent;
   pinned: boolean;
+  pinnedOrder: number | null;
 };
 
 type DocRow = {
@@ -23,6 +24,7 @@ type DocRow = {
   title: string;
   content_json: string;
   pinned: number;
+  pinned_order: number | null;
 };
 
 type RoutineTask = {
@@ -65,7 +67,7 @@ type NextTaskResponse = {
   currentTime: string;
   nextTask:
     | ({ source: "routine" } & NextRoutineTask)
-    | ({ source: "todo"; docId: string; docTitle: string; text: string })
+    | ({ source: "todo"; docId: string; docTitle: string; text: string; nodePath: number[] })
     | null;
   upcoming: NextRoutineTask[];
 };
@@ -169,7 +171,8 @@ const rowToDoc = (row: DocRow): Doc => {
     id: row.id,
     title: row.title,
     content: normalizeDocContent(parsed),
-    pinned: row.pinned === 1
+    pinned: row.pinned === 1,
+    pinnedOrder: row.pinned_order
   };
 };
 
@@ -277,16 +280,16 @@ const collectText = (value: unknown): string => {
   return `${ownText} ${contentText}`.replace(/\s+/g, " ").trim();
 };
 
-const extractUncheckedTasksFromContent = (value: unknown): string[] => {
-  const tasks: string[] = [];
+const extractUncheckedTasksFromContent = (value: unknown): Array<{ text: string; nodePath: number[] }> => {
+  const tasks: Array<{ text: string; nodePath: number[] }> = [];
 
-  const walk = (node: unknown) => {
+  const walk = (node: unknown, path: number[]) => {
     if (!node || typeof node !== "object") {
       return;
     }
 
     if (Array.isArray(node)) {
-      node.forEach((child) => walk(child));
+      node.forEach((child, index) => walk(child, [...path, index]));
       return;
     }
 
@@ -301,23 +304,25 @@ const extractUncheckedTasksFromContent = (value: unknown): string[] => {
         const label = collectText(item.content).trim();
 
         if (label) {
-          tasks.push(label);
+          tasks.push({ text: label, nodePath: path });
         }
       }
     }
 
     if (item.content) {
-      item.content.forEach((child) => walk(child));
+      item.content.forEach((child, index) => walk(child, [...path, index]));
     }
   };
 
-  walk(value);
+  walk(value, []);
   return tasks;
 };
 
-const findNextUncheckedTodo = (database: DatabaseSync): { docId: string; docTitle: string; text: string } | null => {
+const findNextUncheckedTodo = (database: DatabaseSync): { docId: string; docTitle: string; text: string; nodePath: number[] } | null => {
   const rows = database
-    .prepare("SELECT id, title, content_json FROM documents ORDER BY pinned DESC, updated_at DESC, title COLLATE NOCASE ASC")
+    .prepare(
+      "SELECT id, title, content_json FROM documents ORDER BY pinned DESC, CASE WHEN pinned = 1 THEN COALESCE(pinned_order, 2147483647) ELSE 2147483647 END ASC, updated_at DESC, title COLLATE NOCASE ASC"
+    )
     .all() as Array<{ id: string; title: string; content_json: string }>;
 
   for (const row of rows) {
@@ -335,12 +340,54 @@ const findNextUncheckedTodo = (database: DatabaseSync): { docId: string; docTitl
       return {
         docId: row.id,
         docTitle: row.title,
-        text: tasks[0]
+        text: tasks[0].text,
+        nodePath: tasks[0].nodePath
       };
     }
   }
 
   return null;
+};
+
+const setTaskItemCheckedAtPath = (content: unknown, nodePath: number[]): unknown => {
+  if (!content || typeof content !== "object") {
+    return content;
+  }
+
+  const nextContent = JSON.parse(JSON.stringify(content)) as { type?: unknown; attrs?: unknown; content?: unknown[] };
+  let current: unknown = nextContent;
+
+  for (const index of nodePath) {
+    if (typeof index !== "number" || !Number.isInteger(index) || index < 0) {
+      return content;
+    }
+
+    if (!current || typeof current !== "object") {
+      return content;
+    }
+
+    const currentNode = current as { content?: unknown[] };
+
+    if (!Array.isArray(currentNode.content) || index >= currentNode.content.length) {
+      return content;
+    }
+
+    current = currentNode.content[index];
+  }
+
+  if (!current || typeof current !== "object") {
+    return content;
+  }
+
+  const taskNode = current as { type?: unknown; attrs?: Record<string, unknown> };
+
+  if (taskNode.type !== "taskItem") {
+    return content;
+  }
+
+  const attrs = taskNode.attrs && typeof taskNode.attrs === "object" ? taskNode.attrs : {};
+  taskNode.attrs = { ...attrs, checked: true };
+  return nextContent;
 };
 
 const resolveNextTask = (database: DatabaseSync): NextTaskResponse => {
@@ -427,7 +474,8 @@ const resolveNextTask = (database: DatabaseSync): NextTaskResponse => {
         source: "todo",
         docId: todo.docId,
         docTitle: todo.docTitle,
-        text: todo.text
+        text: todo.text,
+        nodePath: todo.nodePath
       },
       upcoming
     };
@@ -470,6 +518,7 @@ const setupDb = async (): Promise<DatabaseSync> => {
       title TEXT NOT NULL,
       content_json TEXT NOT NULL,
       pinned INTEGER NOT NULL DEFAULT 0,
+      pinned_order INTEGER,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -498,6 +547,12 @@ const setupDb = async (): Promise<DatabaseSync> => {
     CREATE INDEX IF NOT EXISTS idx_routine_completion_date ON routine_task_completions (completion_date);
   `);
 
+  const documentColumns = getTableColumns(nextDb, "documents");
+
+  if (!documentColumns.has("pinned_order")) {
+    nextDb.exec("ALTER TABLE documents ADD COLUMN pinned_order INTEGER");
+  }
+
   const routineTaskColumns = getTableColumns(nextDb, "routine_tasks");
 
   if (!routineTaskColumns.has("subtasks_json")) {
@@ -522,8 +577,9 @@ const setupDb = async (): Promise<DatabaseSync> => {
     }
 
     const insertStatement = nextDb.prepare(
-      "INSERT OR IGNORE INTO documents (id, title, content_json, pinned) VALUES (?, ?, ?, ?)"
+      "INSERT OR IGNORE INTO documents (id, title, content_json, pinned, pinned_order) VALUES (?, ?, ?, ?, ?)"
     );
+    let seededPinnedOrder = 0;
 
     for (const entry of files) {
       if (!entry.isFile() || !entry.name.endsWith(".md")) {
@@ -540,7 +596,13 @@ const setupDb = async (): Promise<DatabaseSync> => {
       const parsed = parseMarkdown(id, markdown);
       const content = markdownBodyToContent(parsed.body);
 
-      insertStatement.run(parsed.id, parsed.title, JSON.stringify(content), parsed.pinned ? 1 : 0);
+      const isPinned = parsed.pinned ? 1 : 0;
+      const pinnedOrder = isPinned ? seededPinnedOrder : null;
+      insertStatement.run(parsed.id, parsed.title, JSON.stringify(content), isPinned, pinnedOrder);
+
+      if (isPinned) {
+        seededPinnedOrder += 1;
+      }
     }
   }
 
@@ -564,15 +626,46 @@ export const docsApiPlugin = (): PluginOption => ({
         const database = await setupDb();
 
         if (pathname.startsWith("/api/documents")) {
+          if (method === "PUT" && pathname === "/api/documents/pinned-order") {
+            const payload = (await readRequestBody(req)) as { orderedIds?: unknown };
+            const orderedIds = Array.isArray(payload.orderedIds)
+              ? payload.orderedIds.filter((id): id is string => typeof id === "string" && isSafeId(id))
+              : [];
+
+            if (orderedIds.length === 0) {
+              return sendJson(res, 400, { error: "orderedIds must be a non-empty array" });
+            }
+
+            database.exec("BEGIN");
+
+            try {
+              orderedIds.forEach((id, index) => {
+                database
+                  .prepare("UPDATE documents SET pinned_order = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND pinned = 1")
+                  .run(index, id);
+              });
+
+              database.exec("COMMIT");
+            } catch (error) {
+              database.exec("ROLLBACK");
+              throw error;
+            }
+
+            return sendJson(res, 200, { ok: true });
+          }
+
           if (method === "GET" && pathname === "/api/documents") {
             const rows = database
-              .prepare("SELECT id, title, pinned FROM documents ORDER BY pinned DESC, title COLLATE NOCASE ASC")
-              .all() as Array<{ id: string; title: string; pinned: number }>;
+              .prepare(
+                "SELECT id, title, pinned, pinned_order FROM documents ORDER BY pinned DESC, CASE WHEN pinned = 1 THEN COALESCE(pinned_order, 2147483647) ELSE 2147483647 END ASC, title COLLATE NOCASE ASC"
+              )
+              .all() as Array<{ id: string; title: string; pinned: number; pinned_order: number | null }>;
 
             const docs = rows.map((row) => ({
               id: row.id,
               title: row.title,
-              pinned: row.pinned === 1
+              pinned: row.pinned === 1,
+              pinnedOrder: row.pinned_order
             }));
 
             return sendJson(res, 200, docs);
@@ -585,10 +678,10 @@ export const docsApiPlugin = (): PluginOption => ({
             const content: DocContent = { type: "doc", content: [{ type: "paragraph" }] };
 
             database
-              .prepare("INSERT INTO documents (id, title, content_json, pinned) VALUES (?, ?, ?, ?)")
-              .run(id, title, JSON.stringify(content), 0);
+              .prepare("INSERT INTO documents (id, title, content_json, pinned, pinned_order) VALUES (?, ?, ?, ?, ?)")
+              .run(id, title, JSON.stringify(content), 0, null);
 
-            return sendJson(res, 201, { id, title, content, pinned: false });
+            return sendJson(res, 201, { id, title, content, pinned: false, pinnedOrder: null });
           }
 
           const match = pathname.match(/^\/api\/documents\/([a-z0-9-]+)$/i);
@@ -605,7 +698,7 @@ export const docsApiPlugin = (): PluginOption => ({
 
           if (method === "GET") {
             const row = database
-              .prepare("SELECT id, title, content_json, pinned FROM documents WHERE id = ?")
+              .prepare("SELECT id, title, content_json, pinned, pinned_order FROM documents WHERE id = ?")
               .get(id) as DocRow | undefined;
 
             if (!row) {
@@ -617,24 +710,49 @@ export const docsApiPlugin = (): PluginOption => ({
 
           if (method === "PUT") {
             const row = database
-              .prepare("SELECT id, title, content_json, pinned FROM documents WHERE id = ?")
+              .prepare("SELECT id, title, content_json, pinned, pinned_order FROM documents WHERE id = ?")
               .get(id) as DocRow | undefined;
 
             if (!row) {
               return sendJson(res, 404, { error: "Not found" });
             }
 
-            const payload = (await readRequestBody(req)) as { title?: unknown; content?: unknown; pinned?: unknown };
+            const payload = (await readRequestBody(req)) as {
+              title?: unknown;
+              content?: unknown;
+              pinned?: unknown;
+              pinnedOrder?: unknown;
+            };
             const existing = rowToDoc(row);
             const nextTitle = typeof payload.title === "string" ? payload.title : existing.title;
             const nextContent = payload.content !== undefined ? normalizeDocContent(payload.content) : existing.content;
-            const nextPinned = payload.pinned === true;
+            const nextPinned = payload.pinned === undefined ? existing.pinned : payload.pinned === true;
+            let nextPinnedOrder: number | null = existing.pinnedOrder;
+
+            if (nextPinned) {
+              if (typeof payload.pinnedOrder === "number" && Number.isFinite(payload.pinnedOrder)) {
+                nextPinnedOrder = Math.trunc(payload.pinnedOrder);
+              } else if (!existing.pinned) {
+                const maxPinnedOrderRow = database
+                  .prepare("SELECT COALESCE(MAX(pinned_order), -1) AS max_order FROM documents WHERE pinned = 1")
+                  .get() as { max_order: number };
+                nextPinnedOrder = maxPinnedOrderRow.max_order + 1;
+              }
+            } else {
+              nextPinnedOrder = null;
+            }
 
             database
-              .prepare("UPDATE documents SET title = ?, content_json = ?, pinned = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-              .run(nextTitle, JSON.stringify(nextContent), nextPinned ? 1 : 0, id);
+              .prepare("UPDATE documents SET title = ?, content_json = ?, pinned = ?, pinned_order = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+              .run(nextTitle, JSON.stringify(nextContent), nextPinned ? 1 : 0, nextPinnedOrder, id);
 
-            return sendJson(res, 200, { id, title: nextTitle, content: nextContent, pinned: nextPinned });
+            return sendJson(res, 200, {
+              id,
+              title: nextTitle,
+              content: nextContent,
+              pinned: nextPinned,
+              pinnedOrder: nextPinnedOrder
+            });
           }
 
           if (method === "DELETE") {
@@ -806,10 +924,51 @@ export const docsApiPlugin = (): PluginOption => ({
             routineTaskId?: unknown;
             subtaskIndex?: unknown;
             completeAll?: unknown;
+            docId?: unknown;
+            nodePath?: unknown;
           };
 
+          if (payload.source === "todo") {
+            const docId = typeof payload.docId === "string" ? payload.docId : "";
+            const nodePath = Array.isArray(payload.nodePath)
+              ? payload.nodePath.filter((value): value is number => typeof value === "number" && Number.isInteger(value) && value >= 0)
+              : [];
+
+            if (!docId || !isSafeId(docId)) {
+              return sendJson(res, 400, { error: "Invalid docId" });
+            }
+
+            if (!Array.isArray(payload.nodePath) || nodePath.length !== payload.nodePath.length) {
+              return sendJson(res, 400, { error: "Invalid nodePath" });
+            }
+
+            const row = database
+              .prepare("SELECT id, title, content_json, pinned, pinned_order FROM documents WHERE id = ?")
+              .get(docId) as DocRow | undefined;
+
+            if (!row) {
+              return sendJson(res, 404, { error: "Document not found" });
+            }
+
+            let parsed: unknown = null;
+
+            try {
+              parsed = JSON.parse(row.content_json);
+            } catch {
+              parsed = null;
+            }
+
+            const nextContent = setTaskItemCheckedAtPath(parsed, nodePath);
+
+            database
+              .prepare("UPDATE documents SET content_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+              .run(JSON.stringify(normalizeDocContent(nextContent)), docId);
+
+            return sendJson(res, 200, { ok: true });
+          }
+
           if (payload.source !== "routine") {
-            return sendJson(res, 400, { error: "Only routine completion is supported" });
+            return sendJson(res, 400, { error: "Unsupported completion source" });
           }
 
           const routineTaskId = typeof payload.routineTaskId === "string" ? payload.routineTaskId : "";

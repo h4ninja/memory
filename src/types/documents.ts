@@ -2,6 +2,7 @@ export type DocSummary = {
   id: string;
   title: string;
   pinned: boolean;
+  pinnedOrder: number | null;
 };
 
 export type DocContent = {
@@ -15,6 +16,7 @@ export type Doc = {
   title: string;
   content: DocContent;
   pinned: boolean;
+  pinnedOrder: number | null;
 };
 
 export type ContextMenuState = {
@@ -48,6 +50,7 @@ export type NextTodoTask = {
   docId: string;
   docTitle: string;
   text: string;
+  nodePath: number[];
 };
 
 export type NextTask =

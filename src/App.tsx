@@ -124,14 +124,16 @@ export default function App() {
     }
 
     const timeout = window.setTimeout(async () => {
-      await fetchJson<Doc>(`/api/documents/${doc.id}`, {
+      const updated = await fetchJson<Doc>(`/api/documents/${doc.id}`, {
         method: "PUT",
-        body: JSON.stringify({ title: doc.title, content: doc.content, pinned: doc.pinned })
+        body: JSON.stringify({ title: doc.title, content: doc.content, pinned: doc.pinned, pinnedOrder: doc.pinnedOrder })
       });
 
       setDocs((current) =>
         current.map((item) =>
-          item.id === doc.id ? { ...item, title: doc.title || "Untitled", pinned: doc.pinned } : item
+          item.id === doc.id
+            ? { ...item, title: doc.title || "Untitled", pinned: updated.pinned, pinnedOrder: updated.pinnedOrder }
+            : item
         )
       );
     }, 350);
@@ -213,8 +215,40 @@ export default function App() {
       body: JSON.stringify({ title })
     });
 
-    setDocs((current) => [...current, { id: created.id, title: created.title, pinned: created.pinned }]);
+    setDocs((current) => [...current, { id: created.id, title: created.title, pinned: created.pinned, pinnedOrder: created.pinnedOrder }]);
     return created;
+  };
+
+  const movePinnedDocument = async (targetId: string, direction: "up" | "down") => {
+    const pinnedDocs = docs.filter((item) => item.pinned);
+    const currentIndex = pinnedDocs.findIndex((item) => item.id === targetId);
+
+    if (currentIndex < 0) {
+      return;
+    }
+
+    const swapIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
+
+    if (swapIndex < 0 || swapIndex >= pinnedDocs.length) {
+      return;
+    }
+
+    const reordered = [...pinnedDocs];
+    const [moved] = reordered.splice(currentIndex, 1);
+
+    if (!moved) {
+      return;
+    }
+
+    reordered.splice(swapIndex, 0, moved);
+
+    await fetchJson<{ ok: true }>("/api/documents/pinned-order", {
+      method: "PUT",
+      body: JSON.stringify({ orderedIds: reordered.map((item) => item.id) })
+    });
+
+    const list = await fetchJson<DocSummary[]>("/api/documents");
+    setDocs(list);
   };
 
   const setPinnedState = async (targetId: string, pinned: boolean) => {
@@ -233,15 +267,16 @@ export default function App() {
       return;
     }
 
-    await fetchJson<Doc>(`/api/documents/${targetId}`, {
+    const updated = await fetchJson<Doc>(`/api/documents/${targetId}`, {
       method: "PUT",
       body: JSON.stringify({ title: targetDoc.title, content: targetDoc.content, pinned })
     });
 
-    setDocs((current) => current.map((item) => (item.id === targetId ? { ...item, pinned } : item)));
+    const list = await fetchJson<DocSummary[]>("/api/documents");
+    setDocs(list);
 
     if (doc?.id === targetId) {
-      setDoc((current) => (current ? { ...current, pinned } : current));
+      setDoc((current) => (current ? { ...current, pinned: updated.pinned, pinnedOrder: updated.pinnedOrder } : current));
     }
   };
 
@@ -290,7 +325,7 @@ export default function App() {
   const openContextMenu = (event: ReactMouseEvent<HTMLButtonElement>, docId: string) => {
     event.preventDefault();
     const menuWidth = 176;
-    const menuHeight = 48;
+    const menuHeight = 180;
     const offset = 6;
     const x = Math.min(event.clientX + offset, window.innerWidth - menuWidth - offset);
     const y = Math.min(event.clientY + offset, window.innerHeight - menuHeight - offset);
@@ -298,6 +333,8 @@ export default function App() {
   };
 
   const contextTarget = contextMenu ? docs.find((item) => item.id === contextMenu.docId) ?? null : null;
+  const pinnedDocs = docs.filter((item) => item.pinned);
+  const contextPinnedIndex = contextTarget?.pinned ? pinnedDocs.findIndex((item) => item.id === contextTarget.id) : -1;
 
   return (
     <div className="relative h-screen overflow-hidden">
@@ -342,7 +379,7 @@ export default function App() {
             }}
             onCreateLinkedDocument={async (title) => {
               const created = await createDocument(title);
-              return { id: created.id, title: created.title, pinned: created.pinned };
+              return { id: created.id, title: created.title, pinned: created.pinned, pinnedOrder: created.pinnedOrder };
             }}
             focusTitleToken={focusTitleToken}
           />
@@ -359,6 +396,12 @@ export default function App() {
         <DocumentContextMenu
           contextMenu={contextMenu}
           contextTarget={contextTarget}
+          canMovePinnedUp={contextPinnedIndex > 0}
+          canMovePinnedDown={contextPinnedIndex >= 0 && contextPinnedIndex < pinnedDocs.length - 1}
+          onMovePinned={(docId, direction) => {
+            setContextMenu(null);
+            void movePinnedDocument(docId, direction);
+          }}
           onTogglePinned={(docId, pinned) => {
             setContextMenu(null);
             void setPinnedState(docId, pinned);

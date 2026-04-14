@@ -6,7 +6,7 @@ import { defineConfig } from "vite";
 export default defineConfig({
   server: {
     port: 6969,
-    allowedHosts: ["memory.test"]
+    allowedHosts: ["memory.test", "memory.h4.ninja"]
   },
   plugins: [tailwindcss(), react(), docsApiPlugin()]
 });
